@@ -19,26 +19,42 @@ from urllib.parse import urlparse
 
 from typing import List, Union, Generator, Iterator
 
+
 class Pipeline:
     def __init__(self):
         self.client = None
         self.collection = None
         self.embedder = None
-        self.crawl4ai_url = "http://crawl4ai:11235/crawl"
+        self.crawl4ai_url = os.getenv("CRAWL4AI_URL", "http://crawl4ai:11235/crawl")
 
     async def on_startup(self):
-        self.client = chromadb.HttpClient(host="chromadb", port=8000)
-        self.collection = self.client.get_or_create_collection("crawled_data")
-        self.embedder = SentenceTransformer("all-MiniLM-L6-v2")
+        """
+        Called when Open WebUI server starts.
+        """
+        self._init_clients()
 
     async def on_shutdown(self):
+        """
+        Called when Open WebUI server stops.
+        """
         self.client = None
         self.collection = None
         self.embedder = None
 
+    def _init_clients(self):
+        """
+        Initialize ChromaDB client and embedder. Safe to call multiple times.
+        """
+        if not self.client:
+            self.client = chromadb.HttpClient(host="chromadb", port=8000)
+        if not self.collection:
+            self.collection = self.client.get_or_create_collection("crawled_data")
+        if not self.embedder:
+            self.embedder = SentenceTransformer("all-MiniLM-L6-v2")
+
     def extract_urls(self, text: str) -> List[str]:
         """
-        Extracts all http(s) URLs from a text using a robust regex.
+        Extract all http(s) URLs from text using robust regex.
         """
         url_pattern = re.compile(
             r"(https?://[^\s\"'<>]+)",
@@ -53,35 +69,41 @@ class Pipeline:
         messages: List[dict],
         body: dict
     ) -> Union[str, Generator, Iterator]:
+        """
+        Main pipeline logic.
+        """
 
-        # Try to get URL from body first, else extract from user_message
+        # Fallback to init in case on_startup wasn't called
+        self._init_clients()
+
+        # Get URL
         url = body.get("url")
         if not url:
             urls = self.extract_urls(user_message)
             url = urls[0] if urls else None
 
         if not url:
-            return "❌ Missing URL."
+            return "❌ Missing URL. Please provide a valid http(s) URL."
 
         parsed = urlparse(url)
         if not parsed.scheme.startswith("http"):
-            return "❌ Invalid URL scheme. Use http or https."
+            return f"❌ Invalid URL scheme: {url} - Use http or https."
 
-        # Crawl the URL
+        # Crawl the URL with correct payload
         try:
-            res = requests.post(self.crawl4ai_url, json={"urls": [url]})
+            res = requests.post(self.crawl4ai_url, json={"urls": [url]}, timeout=60)
             res.raise_for_status()
             result = res.json()
         except Exception as e:
             return f"❌ Crawl4AI error: {e}"
 
         text_content = result.get("texts") or [result.get("text")]
-        if not text_content:
-            return "❌ No text content returned."
+        if not text_content or not any(text_content):
+            return f"❌ No text content returned from Crawl4AI for: {url}"
 
         # Detect language
         try:
-            language = detect(" ".join(text_content))
+            language = detect(" ".join(filter(None, text_content)))
         except Exception:
             language = "unknown"
 
@@ -89,7 +111,7 @@ class Pipeline:
         try:
             existing = self.collection.query(query_texts=text_content, n_results=1)
             if existing.get("documents"):
-                return f"⚠️ Duplicate content detected. Skipping storage. URL: {url} Language: {language}"
+                return f"⚠️ Duplicate content detected. Skipping storage.\nURL: {url}\nLanguage: {language}"
         except Exception:
             pass
 
@@ -108,4 +130,4 @@ class Pipeline:
         except Exception as e:
             return f"❌ Embedding/storage error: {e}"
 
-        return f"✅ Successfully crawled and stored {len(text_content)} chunks. URL: {url} Language: {language}"
+        return f"✅ Successfully crawled and stored {len(text_content)} chunks.\nURL: {url}\nLanguage: {language}"
