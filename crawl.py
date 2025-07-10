@@ -23,7 +23,7 @@ class Pipeline:
         self.client = None
         self.collection = None
         self.embedder = None
-        self.crawl4ai_url = os.getenv("CRAWL4AI_URL", "http://crawl4ai:11235/crawl")
+        self.crawl4ai_url = os.getenv("CRAWL4AI_URL", "http://localhost:11235/crawl")
 
     async def on_startup(self):
         # Initialize ChromaDB client & embedder once on startup
