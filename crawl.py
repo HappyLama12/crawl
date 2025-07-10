@@ -71,7 +71,7 @@ class Pipeline:
 
         # Crawl the URL
         try:
-            res = requests.post(self.crawl4ai_url, json={"urls": [url]}, timeout=60)
+            res = requests.post(self.crawl4ai_url, json={"urls": [url], "use_browser": True})
             res.raise_for_status()
             result = res.json()
             print(f"[DEBUG] Raw Crawl4AI response:\n{json.dumps(result, indent=2)}")
