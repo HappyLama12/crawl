@@ -1,3 +1,12 @@
+"""
+title: Data Analyst
+author: User
+description: Data Analyst
+required_open_webui_version: 0.4.3
+version: 0.1
+licence: MIT
+"""
+
 from openwebui.pipelines import Pipeline, PipelineInput, PipelineOutput
 
 import requests
