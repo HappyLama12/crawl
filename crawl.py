@@ -69,7 +69,7 @@ class Pipeline:
 
         # Crawl the URL
         try:
-            res = requests.post(self.crawl4ai_url, json={"url": url})
+            res = requests.post(self.crawl4ai_url, json={"urls": [url]})
             res.raise_for_status()
             result = res.json()
         except Exception as e:
