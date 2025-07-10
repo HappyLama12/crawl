@@ -73,7 +73,7 @@ class Pipeline:
         Main pipeline logic.
         """
 
-        # Fallback to init in case on_startup wasn't called
+        # ✅ Safeguard: initialize clients if needed
         self._init_clients()
 
         # Get URL
@@ -89,31 +89,36 @@ class Pipeline:
         if not parsed.scheme.startswith("http"):
             return f"❌ Invalid URL scheme: {url} - Use http or https."
 
-        # Crawl the URL with correct payload
+        # Crawl the URL
         try:
             res = requests.post(self.crawl4ai_url, json={"urls": [url]}, timeout=60)
             res.raise_for_status()
             result = res.json()
+            print(f"[DEBUG] Crawl4AI result: {result}")
         except Exception as e:
             return f"❌ Crawl4AI error: {e}"
 
         text_content = result.get("texts") or [result.get("text")]
-        if not text_content or not any(text_content):
-            return f"❌ No text content returned from Crawl4AI for: {url}"
+        # Filter out None/empty chunks
+        text_content = [t for t in text_content if t and t.strip()]
+
+        if not text_content:
+            return f"❌ No valid text content returned from Crawl4AI for: {url}"
 
         # Detect language
         try:
-            language = detect(" ".join(filter(None, text_content)))
+            language = detect(" ".join(text_content))
         except Exception:
             language = "unknown"
 
-        # Check for duplicates
+        # Check for duplicates safely
         try:
-            existing = self.collection.query(query_texts=text_content, n_results=1)
+            existing = self.collection.query(query_texts=text_content, n_results=1) or {}
+            print(f"[DEBUG] Chroma query result: {existing}")
             if existing.get("documents"):
                 return f"⚠️ Duplicate content detected. Skipping storage.\nURL: {url}\nLanguage: {language}"
-        except Exception:
-            pass
+        except Exception as e:
+            return f"❌ Chroma query error: {e}"
 
         # Embed and store
         try:
@@ -130,4 +135,8 @@ class Pipeline:
         except Exception as e:
             return f"❌ Embedding/storage error: {e}"
 
-        return f"✅ Successfully crawled and stored {len(text_content)} chunks.\nURL: {url}\nLanguage: {language}"
+        return (
+            f"✅ Successfully crawled and stored {len(text_content)} chunks.\n"
+            f"URL: {url}\n"
+            f"Language: {language}"
+        )
