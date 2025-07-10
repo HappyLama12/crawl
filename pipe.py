@@ -1,15 +1,19 @@
-from openwebui.plugins.pipes import PipeBase
-from pydantic import BaseModel, Field
+import os, time, json
 from urllib.parse import urlparse
+from typing import List
+
+import httpx
+import chromadb
+from pydantic import BaseModel, Field
 from langdetect import detect
 from sentence_transformers import SentenceTransformer
-import chromadb
-import httpx, re, time, os, json
+from openwebui.plugins.pipes import PipeBase
+
 
 class PipeInput(BaseModel):
-    url: str = Field(..., description="URL to crawl and embed")
+    url: str = Field(..., description="URL to crawl and index")
 
-class WebAutoRAGPipe(PipeBase):
+class Pipeline(PipeBase):  # ✅ Required name
     def __init__(self):
         self.client = None
         self.collection = None
@@ -20,7 +24,7 @@ class WebAutoRAGPipe(PipeBase):
         if not self.client:
             self.client = chromadb.HttpClient(host="localhost", port=8000)
         if not self.collection:
-            self.collection = self.client.get_or_create_collection("crawled_data")
+            self.collection = self.client.get_or_create_collection("auto_rag_data")
         if not self.embedder:
             self.embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
@@ -30,7 +34,7 @@ class WebAutoRAGPipe(PipeBase):
 
         parsed = urlparse(url)
         if not parsed.scheme.startswith("http"):
-            return f"❌ Invalid URL scheme: {url} - Use http or https."
+            return f"❌ Invalid URL: {url}"
 
         try:
             async with httpx.AsyncClient() as client:
@@ -40,42 +44,31 @@ class WebAutoRAGPipe(PipeBase):
         except Exception as e:
             return f"❌ Crawl4AI error: {e}"
 
-        text_content = result.get("texts") or [result.get("text")]
-        text_content = [t for t in text_content if t and t.strip()]
-        if not text_content:
-            return f"❌ No valid text content returned from Crawl4AI for: {url}"
+        texts = result.get("texts") or [result.get("text")]
+        texts = [t for t in texts if t and t.strip()]
+        if not texts:
+            return f"❌ No content returned from: {url}"
 
         try:
-            language = detect(" ".join(text_content))
+            language = detect(" ".join(texts))
         except:
             language = "unknown"
 
         try:
-            existing = self.collection.query(query_texts=text_content, n_results=1) or {}
-            if existing.get("documents"):
-                return f"⚠️ Duplicate content detected. Skipping storage.\nURL: {url}\nLanguage: {language}"
-        except Exception as e:
-            return f"❌ Chroma query error: {e}"
-
-        try:
-            embeddings = self.embedder.encode(text_content).tolist()
-            timestamp = int(time.time())
-            ids = [f"{timestamp}-{i}" for i in range(len(text_content))]
-            metadatas = [{"url": url, "language": language} for _ in text_content]
-
+            embeddings = self.embedder.encode(texts).tolist()
+            ids = [f"{int(time.time())}-{i}" for i in range(len(texts))]
             self.collection.add(
-                documents=text_content,
+                documents=texts,
                 embeddings=embeddings,
                 ids=ids,
-                metadatas=metadatas
+                metadatas=[{"url": url, "language": language} for _ in texts]
             )
         except Exception as e:
-            return f"❌ Embedding/storage error: {e}"
+            return f"❌ Storage error: {e}"
 
         return {
-            "status": "✅ Successfully crawled and stored content.",
+            "status": "✅ Indexed",
             "url": url,
-            "language": language,
-            "total_chunks": len(text_content),
-            "chunks_preview": text_content[:2]
+            "chunks": len(texts),
+            "preview": texts[:2]
         }
