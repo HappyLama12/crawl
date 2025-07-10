@@ -2,15 +2,15 @@
 title: CrawlRAG Pipeline
 author: Your Name
 date: 2025-07-10
-version: 1.1
+version: 1.0
 license: MIT
 description: A pipeline that crawls a URL with Crawl4AI, embeds its content, and stores it in ChromaDB.
-requirements: sentence-transformers, chromadb, langdetect, requests, re
+requirements: sentence-transformers, chromadb, langdetect, requests
 """
 
 import os
-import time
 import re
+import time
 import requests
 import chromadb
 from sentence_transformers import SentenceTransformer
@@ -27,24 +27,24 @@ class Pipeline:
         self.crawl4ai_url = os.getenv("CRAWL4AI_URL", "http://localhost:11235/crawl")
 
     async def on_startup(self):
-        # Initialize ChromaDB client & embedder once on startup
         self.client = chromadb.HttpClient(host="chromadb", port=8000)
         self.collection = self.client.get_or_create_collection("crawled_data")
         self.embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
     async def on_shutdown(self):
-        # Cleanup if needed
         self.client = None
         self.collection = None
         self.embedder = None
 
-    def extract_url(self, text: str) -> Union[str, None]:
-        """Extract the first URL from a string using regex."""
-        
-        # Regex pattern to extract URLs (http(s), www, and partial domains)
-        URL_REGEX = re.compile(r'\b(?:https?://|www\.)[\w\-]+(?:\.[\w\-]+)+(?:[\w\-\._~:/?#\[\]@!\$&\'\(\)\*\+,;=]*)')
-        match = URL_REGEX.search(text)
-        return match.group(0) if match else None
+    def extract_urls(self, text: str) -> List[str]:
+        """
+        Extracts all http(s) URLs from a text using a robust regex.
+        """
+        url_pattern = re.compile(
+            r"(https?://[^\s\"'<>]+)",
+            re.IGNORECASE
+        )
+        return url_pattern.findall(text)
 
     def pipe(
         self,
@@ -54,18 +54,18 @@ class Pipeline:
         body: dict
     ) -> Union[str, Generator, Iterator]:
 
-        # Extract URL from body or user message
-        url = body.get("url") or self.extract_url(user_message.strip())
+        # Try to get URL from body first, else extract from user_message
+        url = body.get("url")
+        if not url:
+            urls = self.extract_urls(user_message)
+            url = urls[0] if urls else None
 
         if not url:
-            return "❌ Missing or invalid URL."
+            return "❌ Missing URL."
 
         parsed = urlparse(url)
         if not parsed.scheme.startswith("http"):
-            url = "http://" + url  # Try to fix missing scheme
-            parsed = urlparse(url)
-            if not parsed.scheme.startswith("http"):
-                return "❌ Invalid URL scheme. Use http or https."
+            return "❌ Invalid URL scheme. Use http or https."
 
         # Crawl the URL
         try:
