@@ -19,11 +19,6 @@ from urllib.parse import urlparse
 
 from typing import List, Union, Generator, Iterator
 
-# Regex pattern to extract URLs (http(s), www, and partial domains)
-URL_REGEX = re.compile(
-    r'\b(?:https?://|www\.)[\w\-]+(?:\.[\w\-]+)+(?:[\w\-\._~:/?#\[\]@!\$&\'\(\)\*\+,;=]*)'
-)
-
 class Pipeline:
     def __init__(self):
         self.client = None
@@ -45,6 +40,9 @@ class Pipeline:
 
     def extract_url(self, text: str) -> Union[str, None]:
         """Extract the first URL from a string using regex."""
+        
+        # Regex pattern to extract URLs (http(s), www, and partial domains)
+        URL_REGEX = re.compile(r'\b(?:https?://|www\.)[\w\-]+(?:\.[\w\-]+)+(?:[\w\-\._~:/?#\[\]@!\$&\'\(\)\*\+,;=]*)')
         match = URL_REGEX.search(text)
         return match.group(0) if match else None
 
