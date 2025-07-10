@@ -1,24 +1,23 @@
 """
-title: HeadlessCrawlRAG Pipeline
+title: CrawlRAG Pipeline
 author: Your Name
 date: 2025-07-10
-version: 1.0
+version: 1.1
 license: MIT
-description: A pipeline that uses Playwright headless browser to crawl pages, embed content, and store it in ChromaDB.
-requirements: sentence-transformers, chromadb, langdetect, playwright
+description: A pipeline that crawls a URL with Crawl4AI, embeds its content, and stores it in ChromaDB.
+requirements: sentence-transformers, chromadb, langdetect, requests
 """
 
 import os
-import time
 import re
-from urllib.parse import urlparse
-from typing import List, Union, Generator, Iterator
-
+import time
+import json
+import requests
 import chromadb
 from sentence_transformers import SentenceTransformer
 from langdetect import detect
-
-from playwright.sync_api import sync_playwright
+from urllib.parse import urlparse
+from typing import List, Union, Generator, Iterator
 
 
 class Pipeline:
@@ -26,6 +25,7 @@ class Pipeline:
         self.client = None
         self.collection = None
         self.embedder = None
+        self.crawl4ai_url = os.getenv("CRAWL4AI_URL", "http://crawl4ai:11235/crawl")
 
     async def on_startup(self):
         self._init_clients()
@@ -44,22 +44,8 @@ class Pipeline:
             self.embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
     def extract_urls(self, text: str) -> List[str]:
-        url_pattern = re.compile(
-            r"(https?://[^\s\"'<>]+)",
-            re.IGNORECASE
-        )
+        url_pattern = re.compile(r"(https?://[^\s\"'<>]+)", re.IGNORECASE)
         return url_pattern.findall(text)
-
-    def crawl_with_playwright(self, url: str) -> str:
-        """Use Playwright to load the page and extract visible text."""
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            page.goto(url, timeout=30000)
-            # Extract page's visible text content
-            content = page.evaluate("() => document.body.innerText")
-            browser.close()
-        return content
 
     def pipe(
         self,
@@ -83,20 +69,28 @@ class Pipeline:
         if not parsed.scheme.startswith("http"):
             return f"❌ Invalid URL scheme: {url} - Use http or https."
 
+        # Crawl the URL
         try:
-            text = self.crawl_with_playwright(url)
-            if not text or not text.strip():
-                return f"❌ No text extracted from page: {url}"
-            text_content = [text.strip()]
+            res = requests.post(self.crawl4ai_url, json={"urls": [url]}, timeout=60)
+            res.raise_for_status()
+            result = res.json()
+            print(f"[DEBUG] Raw Crawl4AI response:\n{json.dumps(result, indent=2)}")
         except Exception as e:
-            return f"❌ Headless crawl error: {e}"
+            return f"❌ Crawl4AI error: {e}"
+
+        text_content = result.get("texts") or [result.get("text")]
+        text_content = [t for t in text_content if t and t.strip()]
+
+        if not text_content:
+            return f"❌ No valid text content returned from Crawl4AI for: {url}"
+
+        print(f"[DEBUG] Extracted {len(text_content)} text chunks.")
 
         try:
-            language = detect(text_content[0])
+            language = detect(" ".join(text_content))
         except Exception:
             language = "unknown"
 
-        # Check duplicates
         try:
             existing = self.collection.query(query_texts=text_content, n_results=1) or {}
             if existing.get("documents"):
@@ -106,7 +100,8 @@ class Pipeline:
 
         try:
             embeddings = self.embedder.encode(text_content).tolist()
-            ids = [f"{int(time.time())}-{i}" for i in range(len(text_content))]
+            timestamp = int(time.time())
+            ids = [f"{timestamp}-{i}" for i in range(len(text_content))]
             metadatas = [{"url": url, "language": language} for _ in text_content]
 
             self.collection.add(
@@ -118,4 +113,10 @@ class Pipeline:
         except Exception as e:
             return f"❌ Embedding/storage error: {e}"
 
-        return f"✅ Successfully crawled and stored page content.\nURL: {url}\nLanguage: {language}"
+        return {
+            "status": "✅ Successfully crawled and stored content.",
+            "url": url,
+            "language": language,
+            "total_chunks": len(text_content),
+            "chunks_preview": text_content[:2]  # Show first 2 chunks
+        }
