@@ -10,8 +10,8 @@ from sentence_transformers import SentenceTransformer
 from openwebui.plugins.pipes import PipeBase
 
 
-class PipeInput(BaseModel):
-    url: str = Field(..., description="URL to crawl and index")
+# class PipeInput(BaseModel):
+#     url: str = Field(..., description="URL to crawl and index")
 
 class Pipeline(PipeBase):  # ✅ Required name
     def __init__(self):
