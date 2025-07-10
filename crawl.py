@@ -24,7 +24,7 @@ class Pipeline:
         self.client = None
         self.collection = None
         self.embedder = None
-        self.crawl4ai_url = os.getenv("CRAWL4AI_URL", "http://crawl4ai:11235/crawl")
+        self.crawl4ai_url = "http://crawl4ai:11235/crawl"
 
     async def on_startup(self):
         self.client = chromadb.HttpClient(host="chromadb", port=8000)
