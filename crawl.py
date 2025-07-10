@@ -2,14 +2,15 @@
 title: CrawlRAG Pipeline
 author: Your Name
 date: 2025-07-10
-version: 1.0
+version: 1.1
 license: MIT
 description: A pipeline that crawls a URL with Crawl4AI, embeds its content, and stores it in ChromaDB.
-requirements: sentence-transformers, chromadb, langdetect, requests
+requirements: sentence-transformers, chromadb, langdetect, requests, re
 """
 
 import os
 import time
+import re
 import requests
 import chromadb
 from sentence_transformers import SentenceTransformer
@@ -17,6 +18,11 @@ from langdetect import detect
 from urllib.parse import urlparse
 
 from typing import List, Union, Generator, Iterator
+
+# Regex pattern to extract URLs (http(s), www, and partial domains)
+URL_REGEX = re.compile(
+    r'\b(?:https?://|www\.)[\w\-]+(?:\.[\w\-]+)+(?:[\w\-\._~:/?#\[\]@!\$&\'\(\)\*\+,;=]*)'
+)
 
 class Pipeline:
     def __init__(self):
@@ -37,6 +43,11 @@ class Pipeline:
         self.collection = None
         self.embedder = None
 
+    def extract_url(self, text: str) -> Union[str, None]:
+        """Extract the first URL from a string using regex."""
+        match = URL_REGEX.search(text)
+        return match.group(0) if match else None
+
     def pipe(
         self,
         user_message: str,
@@ -45,15 +56,18 @@ class Pipeline:
         body: dict
     ) -> Union[str, Generator, Iterator]:
 
-        # Expect: user_message or messages[0] to contain the URL
-        url = body.get("url") or user_message.strip()
+        # Extract URL from body or user message
+        url = body.get("url") or self.extract_url(user_message.strip())
 
         if not url:
-            return "❌ Missing URL."
+            return "❌ Missing or invalid URL."
 
         parsed = urlparse(url)
         if not parsed.scheme.startswith("http"):
-            return "❌ Invalid URL scheme. Use http or https."
+            url = "http://" + url  # Try to fix missing scheme
+            parsed = urlparse(url)
+            if not parsed.scheme.startswith("http"):
+                return "❌ Invalid URL scheme. Use http or https."
 
         # Crawl the URL
         try:
