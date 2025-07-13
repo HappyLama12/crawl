@@ -1,11 +1,16 @@
 """
-title: CrawlRAG Pipeline with Ollama RAG
+title: CrawlRAG Pipeline
 author: Your Name
-date: 2025-07-13
-version: 1.2
+version: 1.0.0
 license: MIT
-description: Crawl URL, chunk & store content in ChromaDB, then answer questions using Ollama deepseek-r1:14b model.
-requirements: sentence-transformers, chromadb, langdetect, requests
+description: |
+  Crawl a URL using Crawl4AI, chunk and embed the content in ChromaDB,
+  then answer questions using Ollama DeepSeek-R1:14b with RAG.
+requirements:
+  - requests
+  - chromadb
+  - sentence-transformers
+  - langdetect
 """
 
 import os
@@ -17,7 +22,6 @@ from sentence_transformers import SentenceTransformer
 from langdetect import detect
 from urllib.parse import urlparse
 from typing import List, Union, Generator, Iterator
-
 
 class Pipeline:
     def __init__(self):
@@ -50,55 +54,25 @@ class Pipeline:
 
     def chunk_text(self, text: str, max_words: int = 100) -> List[str]:
         words = text.split()
-        chunks = []
-        for i in range(0, len(words), max_words):
-            chunk = " ".join(words[i:i + max_words])
-            chunks.append(chunk)
-        return chunks
-
-    def summarize_chunk(self, chunk: str) -> str:
-        try:
-            payload = {
-                "model": self.ollama_model,
-                "messages": [
-                    {"role": "system", "content": "Summarize the following text:"},
-                    {"role": "user", "content": chunk}
-                ]
-            }
-            res = requests.post(self.ollama_url, json=payload, timeout=60)
-            res.raise_for_status()
-            response = res.json()
-            if "message" in response:
-                return response["message"]["content"].strip()
-            elif "choices" in response and response["choices"]:
-                return response["choices"][0]["message"]["content"].strip()
-            else:
-                return chunk
-        except Exception:
-            return chunk
+        return [" ".join(words[i:i + max_words]) for i in range(0, len(words), max_words)]
 
     def rag_answer(self, question: str) -> str:
         try:
             question_emb = self.embedder.encode([question]).tolist()
-            results = self.collection.query(
-                query_embeddings=question_emb,
-                n_results=3
-            )
-            retrieved_chunks = []
+            results = self.collection.query(query_embeddings=question_emb, n_results=3)
+            chunks = []
             for docs in results.get("documents", []):
-                retrieved_chunks.extend(docs)
+                chunks.extend(docs)
+            if not chunks:
+                return "❌ No relevant chunks found."
 
-            if not retrieved_chunks:
-                return "❌ No relevant chunks found in ChromaDB."
-
-            context = "\n\n".join(retrieved_chunks)
-
+            context = "\n\n".join(chunks)
             payload = {
                 "model": self.ollama_model,
                 "messages": [
                     {
                         "role": "system",
-                        "content": "You are a helpful assistant. Use the provided context to answer the user's question accurately."
+                        "content": "You are a helpful assistant. Use the provided context to answer accurately."
                     },
                     {
                         "role": "user",
@@ -106,41 +80,20 @@ class Pipeline:
                     }
                 ]
             }
-
             res = requests.post(self.ollama_url, json=payload, timeout=120)
             res.raise_for_status()
             response = res.json()
-            print(f"[Ollama RAG Response]: {response}")
-
-            if "message" in response and response["message"].get("content"):
-                content = response["message"]["content"].strip()
-                if content.lower().startswith("powered by mediawiki"):
-                    return "⚠️ Ollama returned only site boilerplate. No useful answer found."
-                return content
-
-            elif "choices" in response and response["choices"]:
-                for choice in response["choices"]:
-                    msg = choice.get("message", {})
-                    content = msg.get("content", "").strip()
-                    if content and not content.lower().startswith("powered by mediawiki"):
-                        return content
-                return "⚠️ Ollama returned no valid content."
-
+            if "message" in response:
+                return response["message"]["content"].strip()
+            elif "choices" in response:
+                return response["choices"][0]["message"]["content"].strip()
             else:
                 return f"❌ Unexpected Ollama response: {response}"
-
         except Exception as e:
             return f"❌ RAG error: {e}"
 
-    def pipe(
-            self,
-            user_message: str,
-            model_id: str,
-            messages: List[dict],
-            body: dict
-    ) -> Union[str, Generator, Iterator]:
+    def pipe(self, user_message: str, model_id: str, messages: List[dict], body: dict) -> Union[str, Generator, Iterator]:
         self._init_clients()
-
         url = body.get("url")
         question = body.get("question")
 
@@ -155,14 +108,14 @@ class Pipeline:
             url = urls[0] if urls else None
 
         if not url:
-            return "❌ Missing URL. Provide a valid http(s) URL."
+            return "❌ Missing URL."
 
         parsed = urlparse(url)
         if not parsed.scheme.startswith("http"):
             return f"❌ Invalid URL scheme: {url}"
 
         try:
-            res = requests.post(self.crawl4ai_url, json={"urls": [url], "depth": 2, "sitemap": True}, timeout=90)
+            res = requests.post(self.crawl4ai_url, json={"urls": [url]}, timeout=90)
             res.raise_for_status()
             result = res.json()
         except Exception as e:
@@ -171,59 +124,59 @@ class Pipeline:
         texts = result.get("texts")
         single_text = result.get("text")
         raw_texts = []
-
         if texts and isinstance(texts, list) and any(texts):
             raw_texts = texts
         elif single_text and isinstance(single_text, str) and single_text.strip():
             raw_texts = [single_text]
 
         if not raw_texts:
-            return f"❌ No text content returned from Crawl4AI for: {url}\nRaw response: {result}"
+            return f"❌ No text from Crawl4AI for: {url}"
 
-        text_content = []
+        text_chunks = []
         for t in raw_texts:
-            chunks = self.chunk_text(t.strip(), max_words=100)
-            summarized = [self.summarize_chunk(c) for c in chunks]
-            text_content.extend(summarized)
+            text_chunks.extend(self.chunk_text(t.strip(), max_words=100))
 
         try:
-            language = detect(" ".join(text_content[:1]))
+            language = detect(" ".join(text_chunks[:1]))
         except Exception:
             language = "unknown"
 
         try:
-            existing = self.collection.query(query_texts=[text_content[0]], n_results=1)
+            existing = self.collection.query(query_texts=[text_chunks[0]], n_results=1)
             if existing.get("documents") and existing["documents"][0]:
-                return f"⚠️ Duplicate content detected. Skipping storage.\nURL: {url}\nLanguage: {language}"
+                return f"⚠️ Duplicate detected. Skipping.\nURL: {url}\nLanguage: {language}"
         except Exception:
             pass
 
         try:
-            embeddings = self.embedder.encode(text_content).tolist()
-            ids = [f"{int(time.time())}-{i}" for i in range(len(text_content))]
-            metadatas = [{"url": url, "language": language} for _ in text_content]
-
-            self.collection.add(
-                documents=text_content,
-                embeddings=embeddings,
-                ids=ids,
-                metadatas=metadatas
-            )
+            embeddings = self.embedder.encode(text_chunks).tolist()
+            ids = [f"{int(time.time())}-{i}" for i in range(len(text_chunks))]
+            metadatas = [{"url": url, "language": language} for _ in text_chunks]
+            self.collection.add(documents=text_chunks, embeddings=embeddings, ids=ids, metadatas=metadatas)
         except Exception as e:
-            return f"❌ Embedding/storage error: {e}"
+            return f"❌ Storage error: {e}"
 
         answer = ""
         if question:
             answer = self.rag_answer(question)
             answer = f"\n\n💬 **Answer:**\n{answer}"
 
-        joined_text = "\n\n".join(text_content[:3])
-
+        sample = "\n\n".join(text_chunks[:3])
         return (
-            f"✅ Successfully crawled and stored {len(text_content)} chunks.\n"
+            f"✅ Stored {len(text_chunks)} chunks.\n"
             f"URL: {url}\n"
             f"Language: {language}\n\n"
-            f"📄 **Sample content:**\n{joined_text}"
-            f"{answer}\n\n"
-            f"📝 Feedback: Please rate the answer quality (1–5) and provide suggestions for improvement."
+            f"📄 **Sample:**\n{sample}{answer}"
         )
+
+# -- Open WebUI hooks --
+pipeline = Pipeline()
+
+async def on_startup():
+    await pipeline.on_startup()
+
+async def on_shutdown():
+    await pipeline.on_shutdown()
+
+def pipe(user_message: str, model_id: str, messages: list, body: dict) -> Union[str, Generator, Iterator]:
+    return pipeline.pipe(user_message, model_id, messages, body)
