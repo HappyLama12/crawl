@@ -4,7 +4,7 @@ author: Your Name
 date: 2025-07-10
 version: 1.0
 license: MIT
-description: A pipeline that crawls a URL with Crawl4AI, embeds its content, and stores it in ChromaDB.
+description: A pipeline that crawls a URL with Crawl4AI, embeds its content, stores it in ChromaDB, and returns the content.
 requirements: sentence-transformers, chromadb, langdetect, requests
 """
 
@@ -35,7 +35,7 @@ class Pipeline:
 
     async def on_shutdown(self):
         """
-        Called when Open WebUI shuts down.
+        Called when Open WebUI stops.
         """
         self.client = None
         self.collection = None
@@ -67,13 +67,13 @@ class Pipeline:
         body: dict
     ) -> Union[str, Generator, Iterator]:
         """
-        Main pipeline logic. Compliant with Open WebUI's `pipe` plugin format.
+        Main pipeline logic.
         """
 
-        # Safe fallback if on_startup wasn't run
+        # Fallback init if on_startup not triggered
         self._init_clients()
 
-        # 1️⃣ Extract URL
+        # 1️⃣ Get URL
         url = body.get("url")
         if not url:
             urls = self.extract_urls(user_message)
@@ -96,7 +96,7 @@ class Pipeline:
 
         text_content = result.get("texts") or [result.get("text")]
         if not text_content or not any(text_content):
-            return f"❌ No text returned from Crawl4AI for: {url}"
+            return f"❌ No text content returned from Crawl4AI for: {url}"
 
         # 3️⃣ Detect language
         try:
@@ -108,7 +108,7 @@ class Pipeline:
         try:
             existing = self.collection.query(query_texts=text_content, n_results=1)
             if existing.get("documents"):
-                return f"⚠️ Duplicate content detected.\nURL: {url}\nLanguage: {language}"
+                return f"⚠️ Duplicate content detected. Skipping storage.\nURL: {url}\nLanguage: {language}"
         except Exception:
             pass
 
@@ -127,4 +127,11 @@ class Pipeline:
         except Exception as e:
             return f"❌ Embedding/storage error: {e}"
 
-        return f"✅ Successfully crawled and stored {len(text_content)} chunks.\nURL: {url}\nLanguage: {language}"
+        # ✅ 6️⃣ Return the crawled text back to user
+        joined_text = "\n\n".join(text_content[:3])  # Send first few chunks only (optional)
+        return (
+            f"✅ Successfully crawled and stored {len(text_content)} chunks.\n"
+            f"URL: {url}\n"
+            f"Language: {language}\n\n"
+            f"📄 **Sample content:**\n{joined_text}"
+        )
