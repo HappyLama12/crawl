@@ -2,10 +2,10 @@
 title: CrawlRAG Pipeline
 author: Your Name
 date: 2025-07-13
-version: 1.2
+version: 1.3
 license: MIT
-description: Crawls a URL, stores it in ChromaDB, and answers a question using RAG.
-requirements: sentence-transformers, chromadb, langdetect, requests, openai
+description: Crawls a URL, stores it in ChromaDB, and answers a question using RAG with Ollama.
+requirements: sentence-transformers, chromadb, langdetect, requests
 """
 
 import os
@@ -18,7 +18,6 @@ from urllib.parse import urlparse
 from typing import List, Union
 import chromadb
 from chromadb.config import Settings
-from openai import OpenAI  # or use your preferred LLM client
 
 
 class Pipeline:
@@ -28,7 +27,8 @@ class Pipeline:
         self.embedder = None
         self.persist_directory = os.getenv("CHROMA_PERSIST_DIR", "./chroma_db/crawled")
         self.crawl4ai_url = os.getenv("CRAWL4AI_URL", "http://crawl4ai:11235/crawl")
-        self.llm_client = OpenAI()  # Make sure you set OPENAI_API_KEY
+        self.ollama_url = os.getenv("OLLAMA_URL", "http://ollama:11434/api/chat")
+        self.ollama_model = os.getenv("OLLAMA_MODEL", "deepseek-r1:14b")
 
     async def on_startup(self):
         self._init_clients()
@@ -60,7 +60,7 @@ class Pipeline:
         body: dict
     ) -> str:
         """
-        Crawl + store + answer.
+        Crawl + store + (optionally) answer.
         """
         try:
             self._init_clients()
@@ -150,7 +150,7 @@ class Pipeline:
 
     def rag(self, question: str) -> str:
         """
-        Retrieve relevant chunks and answer with LLM.
+        Retrieve relevant chunks and answer with Ollama.
         """
         try:
             # Embed the question
@@ -167,15 +167,15 @@ class Pipeline:
 
             context = "\n\n".join(retrieved_chunks)
 
-            # Use OpenAI to generate the answer
-            response = self.llm_client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
+            # Use Ollama to generate the answer
+            payload = {
+                "model": self.ollama_model,
+                "messages": [
                     {
                         "role": "system",
                         "content": (
-                            "You are a helpful assistant using the retrieved context below "
-                            "to answer the question as accurately as possible."
+                            "You are a helpful assistant. "
+                            "Use the provided context to answer the user's question accurately."
                         )
                     },
                     {
@@ -183,8 +183,13 @@ class Pipeline:
                         "content": f"Context:\n{context}\n\nQuestion: {question}"
                     }
                 ]
-            )
-            return response.choices[0].message.content.strip()
+            }
+
+            res = requests.post(self.ollama_url, json=payload, timeout=120)
+            res.raise_for_status()
+            response = res.json()
+
+            return response["message"]["content"].strip()
 
         except Exception as e:
             return f"❌ RAG LLM error: {e}"
