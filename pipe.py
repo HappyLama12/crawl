@@ -1,13 +1,3 @@
-"""
-title: CrawlRAG Pipeline with Ollama RAG
-author: Your Name
-date: 2025-07-13
-version: 1.2
-license: MIT
-description: Crawl URL, chunk & store content in ChromaDB, then answer questions using Ollama deepseek-r1:14b model.
-requirements: sentence-transformers, chromadb, langdetect, requests
-"""
-
 import os
 import re
 import time
@@ -42,10 +32,10 @@ class Pipeline:
         if not self.collection:
             self.collection = self.client.get_or_create_collection("crawled_data")
         if not self.embedder:
-            self.embedder = SentenceTransformer("all-MiniLM-L6-v2")
+            self.embedder = SentenceTransformer("intfloat/multilingual-e5-large")
 
     def extract_urls(self, text: str) -> List[str]:
-        pattern = re.compile(r"(https?://[^\s\"'<>]+)", re.IGNORECASE)
+        pattern = re.compile(r"(https?://[^\s"'<>]+)", re.IGNORECASE)
         return pattern.findall(text)
 
     def chunk_text(self, text: str, max_words: int = 100) -> List[str]:
@@ -55,6 +45,22 @@ class Pipeline:
             chunk = " ".join(words[i:i + max_words])
             chunks.append(chunk)
         return chunks
+
+    def summarize_chunk(self, chunk: str) -> str:
+        try:
+            payload = {
+                "model": self.ollama_model,
+                "messages": [
+                    {"role": "system", "content": "Summarize the following text:"},
+                    {"role": "user", "content": chunk}
+                ]
+            }
+            res = requests.post(self.ollama_url, json=payload, timeout=60)
+            res.raise_for_status()
+            response = res.json()
+            return response.get("message", {}).get("content", "").strip()
+        except Exception:
+            return chunk
 
     def rag_answer(self, question: str) -> str:
         try:
@@ -90,7 +96,6 @@ class Pipeline:
             res.raise_for_status()
             response = res.json()
 
-            # ✅ Robust handling for both streaming and normal format
             if "message" in response:
                 return response["message"]["content"].strip()
             elif "choices" in response:
@@ -113,7 +118,6 @@ class Pipeline:
         url = body.get("url")
         question = body.get("question")
 
-        # Fallback: Try to extract question from user message if not explicitly provided
         if not question:
             for msg in reversed(messages):
                 if msg.get("role") == "user" and msg.get("content"):
@@ -132,7 +136,7 @@ class Pipeline:
             return f"❌ Invalid URL scheme: {url}"
 
         try:
-            res = requests.post(self.crawl4ai_url, json={"urls": [url]}, timeout=60)
+            res = requests.post(self.crawl4ai_url, json={"urls": [url], "depth": 2, "sitemap": True}, timeout=90)
             res.raise_for_status()
             result = res.json()
         except Exception as e:
@@ -152,7 +156,9 @@ class Pipeline:
 
         text_content = []
         for t in raw_texts:
-            text_content.extend(self.chunk_text(t.strip(), max_words=100))
+            chunks = self.chunk_text(t.strip(), max_words=100)
+            summarized = [self.summarize_chunk(c) for c in chunks]
+            text_content.extend(summarized)
 
         try:
             language = detect(" ".join(text_content[:1]))
@@ -192,5 +198,6 @@ class Pipeline:
             f"URL: {url}\n"
             f"Language: {language}\n\n"
             f"📄 **Sample content:**\n{joined_text}"
-            f"{answer}"
+            f"{answer}\n\n"
+            f"📝 Feedback: Please rate the answer quality (1–5) and provide suggestions for improvement."
         )
