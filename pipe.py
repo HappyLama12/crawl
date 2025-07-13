@@ -75,53 +75,59 @@ class Pipeline:
             return chunk  # Fallback on error
 
     def rag_answer(self, question: str) -> str:
-        try:
-            question_emb = self.embedder.encode([question]).tolist()
-            results = self.collection.query(
-                query_embeddings=question_emb,
-                n_results=3
-            )
-            retrieved_chunks = []
-            for docs in results.get("documents", []):
-                retrieved_chunks.extend(docs)
+    try:
+        question_emb = self.embedder.encode([question]).tolist()
+        results = self.collection.query(
+            query_embeddings=question_emb,
+            n_results=3
+        )
+        retrieved_chunks = []
+        for docs in results.get("documents", []):
+            retrieved_chunks.extend(docs)
 
-            if not retrieved_chunks:
-                return "❌ No relevant chunks found in ChromaDB."
+        if not retrieved_chunks:
+            return "❌ No relevant chunks found in ChromaDB."
 
-            context = "\n\n".join(retrieved_chunks)
+        context = "\n\n".join(retrieved_chunks)
 
-            payload = {
-                "model": self.ollama_model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "You are a helpful assistant. Use the provided context to answer the user's question accurately."
-                    },
-                    {
-                        "role": "user",
-                        "content": f"Context:\n{context}\n\nQuestion: {question}"
-                    }
-                ]
-            }
+        payload = {
+            "model": self.ollama_model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are a helpful assistant. Use the provided context to answer the user's question accurately."
+                },
+                {
+                    "role": "user",
+                    "content": f"Context:\n{context}\n\nQuestion: {question}"
+                }
+            ]
+        }
 
-            res = requests.post(self.ollama_url, json=payload, timeout=120)
-            res.raise_for_status()
-            response = res.json()
-            print(f"[Ollama RAG Response]: {response}")  # Debug
+        res = requests.post(self.ollama_url, json=payload, timeout=120)
+        res.raise_for_status()
+        response = res.json()
+        print(f"[Ollama RAG Response]: {response}")
 
-            if "message" in response and response["message"].get("content"):
-                return response["message"]["content"].strip()
-            elif "choices" in response and response["choices"]:
-                choice = response["choices"][0]
-                if "message" in choice and choice["message"].get("content"):
-                    return choice["message"]["content"].strip()
-                else:
-                    return f"⚠️ No message content: {choice}"
-            else:
-                return f"❌ Unexpected Ollama response: {response}"
+        if "message" in response and response["message"].get("content"):
+            content = response["message"]["content"].strip()
+            if content.startswith("Powered by MediaWiki"):
+                return "⚠️ Ollama returned only site boilerplate."
+            return content
 
-        except Exception as e:
-            return f"❌ RAG error: {e}"
+        elif "choices" in response and response["choices"]:
+            for choice in response["choices"]:
+                msg = choice.get("message", {})
+                content = msg.get("content", "").strip()
+                if content and not content.startswith("Powered by MediaWiki"):
+                    return content
+            return "⚠️ Ollama returned no valid content."
+
+        else:
+            return f"❌ Unexpected Ollama response: {response}"
+
+    except Exception as e:
+        return f"❌ RAG error: {e}"
 
     def pipe(
             self,
