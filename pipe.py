@@ -2,9 +2,9 @@
 title: CrawlRAG Pipeline
 author: Your Name
 date: 2025-07-13
-version: 1.3
+version: 1.4
 license: MIT
-description: Crawls a URL, stores it in ChromaDB, and answers a question using RAG with Ollama.
+description: Crawls a URL, chunks and stores it in ChromaDB, and answers a question using RAG with Ollama.
 requirements: sentence-transformers, chromadb, langdetect, requests
 """
 
@@ -52,6 +52,25 @@ class Pipeline:
         pattern = re.compile(r"(https?://[^\s\"\'<>]+)", re.IGNORECASE)
         return pattern.findall(text)
 
+    def chunk_text(self, text: str, max_length: int = 500) -> List[str]:
+        """
+        Split long text into smaller chunks.
+        """
+        words = text.split()
+        chunks = []
+        current_chunk = []
+
+        for word in words:
+            current_chunk.append(word)
+            if len(current_chunk) >= max_length:
+                chunks.append(" ".join(current_chunk))
+                current_chunk = []
+
+        if current_chunk:
+            chunks.append(" ".join(current_chunk))
+
+        return chunks
+
     def pipe(
         self,
         user_message: str,
@@ -60,7 +79,7 @@ class Pipeline:
         body: dict
     ) -> str:
         """
-        Crawl + store + (optionally) answer.
+        Crawl + store (chunked) + (optionally) RAG.
         """
         try:
             self._init_clients()
@@ -87,26 +106,28 @@ class Pipeline:
             except Exception as e:
                 return f"❌ Crawl4AI error: {e}"
 
-            # Extract text
+            # 3️⃣ Extract & chunk text
             texts = result.get("texts")
             single_text = result.get("text")
             text_content = []
 
             if texts and isinstance(texts, list) and any(texts):
-                text_content = [t.strip() for t in texts if t and t.strip()]
+                for t in texts:
+                    if t and t.strip():
+                        text_content.extend(self.chunk_text(t.strip()))
             elif single_text and isinstance(single_text, str) and single_text.strip():
-                text_content = [single_text.strip()]
+                text_content = self.chunk_text(single_text.strip())
 
             if not text_content:
                 return f"❌ No text content returned from Crawl4AI for: {url}\nRaw response: {result}"
 
-            # 3️⃣ Detect language
+            # 4️⃣ Detect language
             try:
-                language = detect(" ".join(text_content))
+                language = detect(" ".join(text_content[:1]))
             except Exception:
                 language = "unknown"
 
-            # 4️⃣ Check for duplicates
+            # 5️⃣ Check for duplicates (rough check using first chunk)
             try:
                 existing = self.collection.query(
                     query_texts=[text_content[0]], n_results=1
@@ -116,7 +137,7 @@ class Pipeline:
             except Exception:
                 pass
 
-            # 5️⃣ Embed & store
+            # 6️⃣ Embed & store chunks
             try:
                 embeddings = self.embedder.encode(text_content).tolist()
                 ids = [f"{int(time.time())}-{i}" for i in range(len(text_content))]
@@ -131,7 +152,7 @@ class Pipeline:
             except Exception as e:
                 return f"❌ Embedding/storage error: {e}"
 
-            # 6️⃣ If user gave a question, run RAG
+            # 7️⃣ If question is provided, run RAG
             answer = ""
             if question:
                 rag_result = self.rag(question)
@@ -141,7 +162,7 @@ class Pipeline:
                 f"✅ Successfully crawled and stored {len(text_content)} chunk(s).\n"
                 f"URL: {url}\n"
                 f"Language: {language}\n\n"
-                f"📄 **Sample content:**\n{text_content[0][:500]}...\n"
+                f"📄 **Sample chunk:**\n{text_content[0][:500]}...\n"
                 f"{answer}"
             )
 
@@ -167,7 +188,6 @@ class Pipeline:
 
             context = "\n\n".join(retrieved_chunks)
 
-            # Use Ollama to generate the answer
             payload = {
                 "model": self.ollama_model,
                 "messages": [
