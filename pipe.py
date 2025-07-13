@@ -1,32 +1,27 @@
+# pipeline.py
+
 """
-title: CrawlRAG Pipeline
-author: Your Name
-description: Crawl a URL, store chunks, then run a RAG query.
+CrawlRAG Pipeline for Open WebUI
 """
 
 import os
 import re
 import time
 import requests
-from urllib.parse import urlparse
 from sentence_transformers import SentenceTransformer
 from langdetect import detect
-from typing import List
+from urllib.parse import urlparse
+from typing import List, Union, Generator, Iterator
 
 import chromadb
 from chromadb.config import Settings
 
 
-class pipelines:
-    """
-    Expose your methods here — Open WebUI looks for this `Tools` class.
-    """
-
+class Pipeline:
     def __init__(self):
         self.client = None
         self.collection = None
         self.embedder = None
-
         self.persist_directory = os.getenv("CHROMA_PERSIST_DIR", "./chroma_db/crawled")
         self.crawl4ai_url = os.getenv("CRAWL4AI_URL", "http://crawl4ai:11235/crawl")
 
@@ -47,7 +42,7 @@ class pipelines:
     def crawl_and_store(self, url: str) -> dict:
         parsed = urlparse(url)
         if not parsed.scheme.startswith("http"):
-            return {"error": f"❌ Invalid URL: {url}"}
+            return {"error": f"❌ Invalid URL scheme: {url}"}
 
         try:
             res = requests.post(self.crawl4ai_url, json={"urls": [url]}, timeout=60)
@@ -58,20 +53,34 @@ class pipelines:
 
         texts = result.get("texts")
         single_text = result.get("text")
-        text_content = []
 
+        text_content = []
         if texts and isinstance(texts, list) and any(texts):
             text_content = [t.strip() for t in texts if t and t.strip()]
         elif single_text and isinstance(single_text, str) and single_text.strip():
             text_content = [single_text.strip()]
 
         if not text_content:
-            return {"error": f"❌ No text found for: {url}"}
+            return {"error": f"❌ No text returned for: {url}\nRaw: {result}"}
 
         try:
             language = detect(" ".join(text_content))
         except Exception:
             language = "unknown"
+
+        try:
+            existing = self.collection.query(
+                query_texts=[text_content[0]],
+                n_results=1
+            )
+            if existing.get("documents") and existing["documents"][0]:
+                return {
+                    "warning": "⚠️ Duplicate detected. Skipping storage.",
+                    "url": url,
+                    "language": language
+                }
+        except Exception:
+            pass
 
         embeddings = self.embedder.encode(text_content).tolist()
         ids = [f"{int(time.time())}-{i}" for i in range(len(text_content))]
@@ -100,10 +109,7 @@ class pipelines:
         context = "\n\n".join(docs)
         return context
 
-    def valve(self, user_message: str, model_id: str, messages: list, body: dict) -> str:
-        """
-        This is your exposed 'valve'.
-        """
+    def valve(self, user_message: str, model_id: str, messages: List[dict], body: dict) -> str:
         self._init_clients()
 
         url = body.get("url")
@@ -115,6 +121,7 @@ class pipelines:
 
         if not url:
             return "❌ Missing URL."
+
         if not question:
             return "❌ Missing question."
 
@@ -122,18 +129,29 @@ class pipelines:
         if "error" in crawl_result:
             return crawl_result["error"]
 
+        if crawl_result.get("warning"):
+            return crawl_result["warning"]
+
         context = self.rag_query(question)
         answer = self._generate_answer(context, question)
 
         return (
-            f"✅ Crawled: {url}\n"
-            f"Chunks: {crawl_result['chunks']}\n"
+            f"✅ Crawled URL: {url}\n"
+            f"Stored {crawl_result['chunks']} chunk(s).\n"
             f"Language: {crawl_result['language']}\n\n"
-            f"📄 Context:\n{context[:500]}...\n\n"
-            f"💡 Answer: {answer}"
+            f"📄 **Context:**\n{context[:500]}...\n\n"
+            f"💡 **Answer:** {answer}"
         )
 
     def _generate_answer(self, context: str, question: str) -> str:
         if not context.strip():
             return "No relevant context found."
-        return f"(Placeholder) Based on context: '{context[:100]}...', your question is: {question}"
+        return f"(Placeholder) Based on context: '{context[:100]}...' your question '{question}' is answered here."
+
+
+# ✅ Global pipeline instance
+_pipeline = Pipeline()
+
+# ✅ Function that Open WebUI will call
+def valve(user_message: str, model_id: str, messages: List[dict], body: dict) -> str:
+    return _pipeline.valve(user_message, model_id, messages, body)
