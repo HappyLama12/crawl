@@ -25,6 +25,7 @@ class Pipeline:
         self.client = None
         self.collection = None
         self.embedder = None
+        self.persist_directory = os.getenv("CHROMA_PERSIST_DIR", "./chroma_db/craweld")
         self.crawl4ai_url = os.getenv("CRAWL4AI_URL", "http://crawl4ai:11235/crawl")
 
     async def on_startup(self):
@@ -46,7 +47,13 @@ class Pipeline:
         Safe client init.
         """
         if not self.client:
-            self.client = chromadb.HttpClient(host="chromadb", port=8000)
+            self.client = chromadb.HttpClient(
+                host="chromadb",
+                port=8000,
+                settings=chromadb.Settings(
+                    persist_directory=self.persist_directory
+                )
+            )
         if not self.collection:
             self.collection = self.client.get_or_create_collection("crawled_data")
         if not self.embedder:
