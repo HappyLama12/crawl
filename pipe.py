@@ -58,7 +58,12 @@ class Pipeline:
             res = requests.post(self.ollama_url, json=payload, timeout=60)
             res.raise_for_status()
             response = res.json()
-            return response.get("message", {}).get("content", "").strip()
+            if "message" in response:
+                return response["message"]["content"].strip()
+            elif "choices" in response:
+                return response["choices"][0]["message"]["content"].strip()
+            else:
+                return chunk
         except Exception:
             return chunk
 
