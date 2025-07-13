@@ -49,7 +49,7 @@ class Pipeline:
             self.embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
     def extract_urls(self, text: str) -> List[str]:
-        pattern = re.compile(r"(https?://[^\s\"'<>]+)", re.IGNORECASE)
+        pattern = re.compile(r"(https?://[^\s\"\'<>]+)", re.IGNORECASE)
         return pattern.findall(text)
 
     def pipe(
