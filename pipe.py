@@ -2,20 +2,21 @@
 title: CrawlRAG Pipeline
 author: Your Name
 date: 2025-07-13
-version: 1.4
+version: 1.5
 license: MIT
-description: Crawls a URL, chunks and stores it in ChromaDB, and answers a question using RAG with Ollama.
+description: Crawls a URL, chunks & stores it in ChromaDB, and answers a question using RAG with Ollama.
 requirements: sentence-transformers, chromadb, langdetect, requests
 """
 
 import os
 import re
 import time
+import textwrap
 import requests
 from sentence_transformers import SentenceTransformer
 from langdetect import detect
 from urllib.parse import urlparse
-from typing import List, Union
+from typing import List
 import chromadb
 from chromadb.config import Settings
 
@@ -52,23 +53,18 @@ class Pipeline:
         pattern = re.compile(r"(https?://[^\s\"\'<>]+)", re.IGNORECASE)
         return pattern.findall(text)
 
-    def chunk_text(self, text: str, max_length: int = 500) -> List[str]:
+    def chunk_text(self, text: str, max_chars: int = 1000) -> List[str]:
         """
-        Split long text into smaller chunks.
+        Split long text into smaller chunks by paragraphs and wrap long ones.
         """
-        words = text.split()
+        paragraphs = text.split("\n")
         chunks = []
-        current_chunk = []
-
-        for word in words:
-            current_chunk.append(word)
-            if len(current_chunk) >= max_length:
-                chunks.append(" ".join(current_chunk))
-                current_chunk = []
-
-        if current_chunk:
-            chunks.append(" ".join(current_chunk))
-
+        for para in paragraphs:
+            para = para.strip()
+            if not para:
+                continue
+            wrapped = textwrap.wrap(para, width=max_chars)
+            chunks.extend(wrapped)
         return chunks
 
     def pipe(
@@ -79,12 +75,12 @@ class Pipeline:
         body: dict
     ) -> str:
         """
-        Crawl + store (chunked) + (optionally) RAG.
+        Crawl, chunk, store & optionally answer with RAG.
         """
         try:
             self._init_clients()
 
-            # 1️⃣ Get URL
+            # 1️⃣ Get URL & question
             url = body.get("url")
             question = body.get("question")
             if not url:
@@ -111,7 +107,7 @@ class Pipeline:
             single_text = result.get("text")
             text_content = []
 
-            if texts and isinstance(texts, list) and any(texts):
+            if texts and isinstance(texts, list):
                 for t in texts:
                     if t and t.strip():
                         text_content.extend(self.chunk_text(t.strip()))
@@ -127,7 +123,7 @@ class Pipeline:
             except Exception:
                 language = "unknown"
 
-            # 5️⃣ Check for duplicates (rough check using first chunk)
+            # 5️⃣ Check for duplicates
             try:
                 existing = self.collection.query(
                     query_texts=[text_content[0]], n_results=1
@@ -137,7 +133,7 @@ class Pipeline:
             except Exception:
                 pass
 
-            # 6️⃣ Embed & store chunks
+            # 6️⃣ Embed & store
             try:
                 embeddings = self.embedder.encode(text_content).tolist()
                 ids = [f"{int(time.time())}-{i}" for i in range(len(text_content))]
@@ -152,14 +148,14 @@ class Pipeline:
             except Exception as e:
                 return f"❌ Embedding/storage error: {e}"
 
-            # 7️⃣ If question is provided, run RAG
+            # 7️⃣ Run RAG if question provided
             answer = ""
             if question:
                 rag_result = self.rag(question)
                 answer = f"\n\n💬 **Answer to your question:**\n{rag_result}"
 
             return (
-                f"✅ Successfully crawled and stored {len(text_content)} chunk(s).\n"
+                f"✅ Successfully crawled & stored {len(text_content)} chunk(s).\n"
                 f"URL: {url}\n"
                 f"Language: {language}\n\n"
                 f"📄 **Sample chunk:**\n{text_content[0][:500]}...\n"
@@ -171,13 +167,11 @@ class Pipeline:
 
     def rag(self, question: str) -> str:
         """
-        Retrieve relevant chunks and answer with Ollama.
+        Retrieve relevant chunks & answer with Ollama.
         """
         try:
-            # Embed the question
             question_embedding = self.embedder.encode([question]).tolist()[0]
 
-            # Query ChromaDB for top 3 relevant docs
             results = self.collection.query(
                 query_embeddings=[question_embedding],
                 n_results=3
@@ -209,7 +203,12 @@ class Pipeline:
             res.raise_for_status()
             response = res.json()
 
-            return response["message"]["content"].strip()
+            if "message" in response:
+                return response["message"]["content"].strip()
+            elif "choices" in response:
+                return response["choices"][0]["message"]["content"].strip()
+            else:
+                return f"❌ Unexpected Ollama response: {response}"
 
         except Exception as e:
             return f"❌ RAG LLM error: {e}"
