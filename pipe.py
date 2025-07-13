@@ -87,16 +87,27 @@ class Pipeline:
             return f"❌ Invalid URL scheme: {url}"
 
         # 2️⃣ Call Crawl4AI
+        # 2️⃣ Call Crawl4AI
         try:
             res = requests.post(self.crawl4ai_url, json={"urls": [url]}, timeout=60)
             res.raise_for_status()
             result = res.json()
         except Exception as e:
             return f"❌ Crawl4AI error: {e}"
-
-        text_content = result.get("texts") or [result.get("text")]
-        if not text_content or not any(text_content):
-            return f"❌ No text content returned from Crawl4AI for: {url}"
+        
+        # 🟢 Robust text extraction
+        texts = result.get("texts")
+        single_text = result.get("text")
+        
+        text_content = []
+        
+        if texts and isinstance(texts, list) and any(texts):
+            text_content = texts
+        elif single_text and isinstance(single_text, str) and single_text.strip():
+            text_content = [single_text]
+        
+        if not text_content:
+            return f"❌ No text content returned from Crawl4AI for: {url}\nRaw response: {result}"
 
         # 3️⃣ Detect language
         try:
