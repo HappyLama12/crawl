@@ -20,6 +20,7 @@ import chromadb
 from chromadb.config import Settings
 from openai import OpenAI  # or use your preferred LLM client
 
+
 class Pipeline:
     def __init__(self):
         self.client = None
@@ -42,7 +43,6 @@ class Pipeline:
             self.client = chromadb.Client(
                 Settings(persist_directory=self.persist_directory)
             )
-            # Or use HttpClient if remote
         if not self.collection:
             self.collection = self.client.get_or_create_collection("crawled_data")
         if not self.embedder:
@@ -62,108 +62,112 @@ class Pipeline:
         """
         Crawl + store + answer.
         """
-        self._init_clients()
-
-        # 1️⃣ Get URL
-        url = body.get("url")
-        question = body.get("question")
-        if not url:
-            urls = self.extract_urls(user_message)
-            url = urls[0] if urls else None
-
-        if not url:
-            return "❌ Missing URL. Provide a valid http(s) URL."
-
-        parsed = urlparse(url)
-        if not parsed.scheme.startswith("http"):
-            return f"❌ Invalid URL scheme: {url}"
-
-        # 2️⃣ Call Crawl4AI
         try:
-            res = requests.post(self.crawl4ai_url, json={"urls": [url]}, timeout=60)
-            res.raise_for_status()
-            result = res.json()
-        except Exception as e:
-            return f"❌ Crawl4AI error: {e}"
+            self._init_clients()
 
-        # Extract text
-        texts = result.get("texts")
-        single_text = result.get("text")
-        text_content = []
+            # 1️⃣ Get URL
+            url = body.get("url")
+            question = body.get("question")
+            if not url:
+                urls = self.extract_urls(user_message)
+                url = urls[0] if urls else None
 
-        if texts and isinstance(texts, list) and any(texts):
-            text_content = [t.strip() for t in texts if t and t.strip()]
-        elif single_text and isinstance(single_text, str) and single_text.strip():
-            text_content = [single_text.strip()]
+            if not url:
+                return "❌ Missing URL. Provide a valid http(s) URL."
 
-        if not text_content:
-            return f"❌ No text content returned from Crawl4AI for: {url}\nRaw response: {result}"
+            parsed = urlparse(url)
+            if not parsed.scheme.startswith("http"):
+                return f"❌ Invalid URL scheme: {url}"
 
-        # 3️⃣ Detect language
-        try:
-            language = detect(" ".join(text_content))
-        except Exception:
-            language = "unknown"
+            # 2️⃣ Call Crawl4AI
+            try:
+                res = requests.post(self.crawl4ai_url, json={"urls": [url]}, timeout=60)
+                res.raise_for_status()
+                result = res.json()
+            except Exception as e:
+                return f"❌ Crawl4AI error: {e}"
 
-        # 4️⃣ Check for duplicates
-        try:
-            existing = self.collection.query(
-                query_texts=[text_content[0]], n_results=1
+            # Extract text
+            texts = result.get("texts")
+            single_text = result.get("text")
+            text_content = []
+
+            if texts and isinstance(texts, list) and any(texts):
+                text_content = [t.strip() for t in texts if t and t.strip()]
+            elif single_text and isinstance(single_text, str) and single_text.strip():
+                text_content = [single_text.strip()]
+
+            if not text_content:
+                return f"❌ No text content returned from Crawl4AI for: {url}\nRaw response: {result}"
+
+            # 3️⃣ Detect language
+            try:
+                language = detect(" ".join(text_content))
+            except Exception:
+                language = "unknown"
+
+            # 4️⃣ Check for duplicates
+            try:
+                existing = self.collection.query(
+                    query_texts=[text_content[0]], n_results=1
+                )
+                if existing.get("documents") and existing["documents"][0]:
+                    return f"⚠️ Duplicate content detected. Skipping storage.\nURL: {url}\nLanguage: {language}"
+            except Exception:
+                pass
+
+            # 5️⃣ Embed & store
+            try:
+                embeddings = self.embedder.encode(text_content).tolist()
+                ids = [f"{int(time.time())}-{i}" for i in range(len(text_content))]
+                metadatas = [{"url": url, "language": language} for _ in text_content]
+
+                self.collection.add(
+                    documents=text_content,
+                    embeddings=embeddings,
+                    ids=ids,
+                    metadatas=metadatas
+                )
+            except Exception as e:
+                return f"❌ Embedding/storage error: {e}"
+
+            # 6️⃣ If user gave a question, run RAG
+            answer = ""
+            if question:
+                rag_result = self.rag(question)
+                answer = f"\n\n💬 **Answer to your question:**\n{rag_result}"
+
+            return (
+                f"✅ Successfully crawled and stored {len(text_content)} chunk(s).\n"
+                f"URL: {url}\n"
+                f"Language: {language}\n\n"
+                f"📄 **Sample content:**\n{text_content[0][:500]}...\n"
+                f"{answer}"
             )
-            if existing.get("documents") and existing["documents"][0]:
-                return f"⚠️ Duplicate content detected. Skipping storage.\nURL: {url}\nLanguage: {language}"
-        except Exception:
-            pass
 
-        # 5️⃣ Embed & store
-        try:
-            embeddings = self.embedder.encode(text_content).tolist()
-            ids = [f"{int(time.time())}-{i}" for i in range(len(text_content))]
-            metadatas = [{"url": url, "language": language} for _ in text_content]
-
-            self.collection.add(
-                documents=text_content,
-                embeddings=embeddings,
-                ids=ids,
-                metadatas=metadatas
-            )
         except Exception as e:
-            return f"❌ Embedding/storage error: {e}"
-
-        # 6️⃣ If user gave a question, run RAG
-        answer = ""
-        if question:
-            rag_result = self.rag(question)
-            answer = f"\n\n💬 **Answer to your question:**\n{rag_result}"
-
-        return (
-            f"✅ Successfully crawled and stored {len(text_content)} chunk(s).\n"
-            f"URL: {url}\n"
-            f"Language: {language}\n\n"
-            f"📄 **Sample content:**\n{text_content[0][:500]}...\n"
-            f"{answer}"
-        )
+            return f"❌ Pipeline internal error: {e}"
 
     def rag(self, question: str) -> str:
         """
         Retrieve relevant chunks and answer with LLM.
         """
-        # Embed the question
-        question_embedding = self.embedder.encode([question]).tolist()[0]
-
-        # Query ChromaDB for top 3 relevant docs
-        results = self.collection.query(
-            query_embeddings=[question_embedding],
-            n_results=3
-        )
-        retrieved_chunks = []
-        for docs in results["documents"]:
-            retrieved_chunks.extend(docs)
-
-        context = "\n\n".join(retrieved_chunks)
-
-        # Use OpenAI to generate the answer
         try:
+            # Embed the question
+            question_embedding = self.embedder.encode([question]).tolist()[0]
+
+            # Query ChromaDB for top 3 relevant docs
+            results = self.collection.query(
+                query_embeddings=[question_embedding],
+                n_results=3
+            )
+            retrieved_chunks = []
+            for docs in results["documents"]:
+                retrieved_chunks.extend(docs)
+
+            context = "\n\n".join(retrieved_chunks)
+
+            # Use OpenAI to generate the answer
             response = self.llm_client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
@@ -181,5 +185,6 @@ class Pipeline:
                 ]
             )
             return response.choices[0].message.content.strip()
+
         except Exception as e:
             return f"❌ RAG LLM error: {e}"
