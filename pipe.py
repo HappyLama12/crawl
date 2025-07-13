@@ -35,7 +35,7 @@ class Pipeline:
             self.embedder = SentenceTransformer("intfloat/multilingual-e5-large")
 
     def extract_urls(self, text: str) -> List[str]:
-        pattern = re.compile(r"(https?://[^\s"'<>]+)", re.IGNORECASE)
+        pattern = re.compile(r"(https?://[^\s\"'<>]+)", re.IGNORECASE)
         return pattern.findall(text)
 
     def chunk_text(self, text: str, max_words: int = 100) -> List[str]:
@@ -55,17 +55,24 @@ class Pipeline:
                     {"role": "user", "content": chunk}
                 ]
             }
-            res = requests.post(self.ollama_url, json=payload, timeout=60)
+            res = requests.post(self.ollama_url, json=payload, timeout=90)
             res.raise_for_status()
             response = res.json()
-            if "message" in response:
+            print(f"[Ollama Summarize Response]: {response}")  # Debug
+
+            if "message" in response and response["message"].get("content"):
                 return response["message"]["content"].strip()
-            elif "choices" in response:
-                return response["choices"][0]["message"]["content"].strip()
+            elif "choices" in response and response["choices"]:
+                choice = response["choices"][0]
+                if "message" in choice and choice["message"].get("content"):
+                    return choice["message"]["content"].strip()
+                else:
+                    return f"⚠️ No message content: {choice}"
             else:
-                return chunk
-        except Exception:
-            return chunk
+                return chunk  # Fallback: use raw chunk
+
+        except Exception as e:
+            return chunk  # Fallback on error
 
     def rag_answer(self, question: str) -> str:
         try:
@@ -100,11 +107,16 @@ class Pipeline:
             res = requests.post(self.ollama_url, json=payload, timeout=120)
             res.raise_for_status()
             response = res.json()
+            print(f"[Ollama RAG Response]: {response}")  # Debug
 
-            if "message" in response:
+            if "message" in response and response["message"].get("content"):
                 return response["message"]["content"].strip()
-            elif "choices" in response:
-                return response["choices"][0]["message"]["content"].strip()
+            elif "choices" in response and response["choices"]:
+                choice = response["choices"][0]
+                if "message" in choice and choice["message"].get("content"):
+                    return choice["message"]["content"].strip()
+                else:
+                    return f"⚠️ No message content: {choice}"
             else:
                 return f"❌ Unexpected Ollama response: {response}"
 
