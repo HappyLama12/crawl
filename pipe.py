@@ -2,10 +2,10 @@
 title: CrawlRAG Pipeline
 author: Your Name
 date: 2025-07-10
-version: 1.1
+version: 1.2
 license: MIT
-description: A pipeline that crawls a URL with Crawl4AI, embeds its content, stores it in ChromaDB, and returns the content.
-requirements: sentence-transformers, chromadb, langdetect, requests
+description: A RAG pipeline: crawl URL with Crawl4AI, embed, store in ChromaDB, and answer a user question with context.
+requirements: sentence-transformers, chromadb, langdetect, requests, openai (if you want GPT)
 """
 
 import os
@@ -15,12 +15,13 @@ import requests
 from sentence_transformers import SentenceTransformer
 from langdetect import detect
 from urllib.parse import urlparse
-from typing import List, Union, Generator, Iterator
+from typing import List, Union
 
 import chromadb
 from chromadb.config import Settings
-# If you use HTTP, import HttpClient instead:
-# from chromadb import HttpClient
+
+# Example: if using OpenAI for answering
+# import openai
 
 
 class Pipeline:
@@ -30,31 +31,24 @@ class Pipeline:
         self.embedder = None
         self.persist_directory = os.getenv("CHROMA_PERSIST_DIR", "./chroma_db/crawled")
         self.crawl4ai_url = os.getenv("CRAWL4AI_URL", "http://crawl4ai:11235/crawl")
+        # Optional: your OpenAI key for final RAG answer
+        self.openai_api_key = os.getenv("OPENAI_API_KEY")
 
     async def on_startup(self):
-        """
-        Called when Open WebUI starts.
-        """
         self._init_clients()
 
     async def on_shutdown(self):
-        """
-        Called when Open WebUI stops.
-        """
         self.client = None
         self.collection = None
         self.embedder = None
 
     def _init_clients(self):
-        """
-        Safe client init.
-        """
         if not self.client:
-            # For local embedded Chroma
             self.client = chromadb.Client(
                 Settings(persist_directory=self.persist_directory)
             )
-            # Or if using HTTP:
+            # Or for remote:
+            # from chromadb import HttpClient
             # self.client = HttpClient(host="chromadb", port=8000)
 
         if not self.collection:
@@ -64,98 +58,131 @@ class Pipeline:
             self.embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
     def extract_urls(self, text: str) -> List[str]:
-        """
-        Extract http(s) URLs from text.
-        """
         pattern = re.compile(r"(https?://[^\s\"'<>]+)", re.IGNORECASE)
         return pattern.findall(text)
 
-    def pipe(
-        self,
-        user_message: str,
-        model_id: str,
-        messages: List[dict],
-        body: dict
-    ) -> Union[str, Generator, Iterator]:
+    def crawl_and_store(self, url: str) -> dict:
         """
-        Main pipeline logic.
+        Crawl the URL with Crawl4AI, embed and store in Chroma.
         """
-
-        # Fallback init if on_startup not triggered
-        self._init_clients()
-
-        # 1️⃣ Get URL
-        url = body.get("url")
-        if not url:
-            urls = self.extract_urls(user_message)
-            url = urls[0] if urls else None
-
-        if not url:
-            return "❌ Missing URL. Provide a valid http(s) URL."
-
         parsed = urlparse(url)
         if not parsed.scheme.startswith("http"):
-            return f"❌ Invalid URL scheme: {url}"
+            return {"error": f"❌ Invalid URL scheme: {url}"}
 
-        # 2️⃣ Call Crawl4AI
         try:
             res = requests.post(self.crawl4ai_url, json={"urls": [url]}, timeout=60)
             res.raise_for_status()
             result = res.json()
         except Exception as e:
-            return f"❌ Crawl4AI error: {e}"
+            return {"error": f"❌ Crawl4AI error: {e}"}
 
-        # 🟢 Robust text extraction
         texts = result.get("texts")
         single_text = result.get("text")
 
         text_content = []
-
         if texts and isinstance(texts, list) and any(texts):
             text_content = [t.strip() for t in texts if t and t.strip()]
         elif single_text and isinstance(single_text, str) and single_text.strip():
             text_content = [single_text.strip()]
 
         if not text_content:
-            return f"❌ No text content returned from Crawl4AI for: {url}\nRaw response: {result}"
+            return {"error": f"❌ No text returned for: {url}\nRaw: {result}"}
 
-        # 3️⃣ Detect language
         try:
             language = detect(" ".join(text_content))
         except Exception:
             language = "unknown"
 
-        # 4️⃣ Check for duplicates (use only a sample query)
-        try:
-            existing = self.collection.query(
-                query_texts=[text_content[0]],
-                n_results=1
-            )
-            if existing.get("documents") and existing["documents"][0]:
-                return f"⚠️ Duplicate content detected. Skipping storage.\nURL: {url}\nLanguage: {language}"
-        except Exception:
-            pass  # Safe to skip duplicate check if it fails
+        embeddings = self.embedder.encode(text_content).tolist()
+        ids = [f"{int(time.time())}-{i}" for i in range(len(text_content))]
+        metadatas = [{"url": url, "language": language} for _ in text_content]
 
-        # 5️⃣ Embed & store
-        try:
-            embeddings = self.embedder.encode(text_content).tolist()
-            ids = [f"{int(time.time())}-{i}" for i in range(len(text_content))]
-            metadatas = [{"url": url, "language": language} for _ in text_content]
-
-            self.collection.add(
-                documents=text_content,
-                embeddings=embeddings,
-                ids=ids,
-                metadatas=metadatas
-            )
-        except Exception as e:
-            return f"❌ Embedding/storage error: {e}"
-
-        # ✅ 6️⃣ Return the crawled text back to user
-        joined_text = "\n\n".join(text_content[:3])
-        return (
-            f"✅ Successfully crawled and stored {len(text_content)} chunk(s).\n"
-            f"URL: {url}\n"
-            f"Language: {language}\n\n"
-            f"📄 **Sample content:**\n{joined_text}"
+        self.collection.add(
+            documents=text_content,
+            embeddings=embeddings,
+            ids=ids,
+            metadatas=metadatas
         )
+
+        return {
+            "status": "✅ Crawled & stored",
+            "chunks": len(text_content),
+            "language": language,
+            "sample": text_content[:3]
+        }
+
+    def rag_query(self, question: str) -> str:
+        """
+        Run RAG: embed question, query Chroma, return context.
+        """
+        query_embedding = self.embedder.encode([question]).tolist()
+        results = self.collection.query(
+            query_embeddings=query_embedding,
+            n_results=3
+        )
+        docs = results.get("documents", [[]])[0]
+        context = "\n\n".join(docs)
+        return context
+
+    def valve(
+        self,
+        user_message: str,
+        model_id: str,
+        messages: List[dict],
+        body: dict
+    ) -> str:
+        """
+        The combined crawl + store + answer valve.
+        """
+        self._init_clients()
+
+        url = body.get("url")
+        question = body.get("question")
+
+        if not url:
+            urls = self.extract_urls(user_message)
+            url = urls[0] if urls else None
+
+        if not url:
+            return "❌ Missing URL."
+
+        if not question:
+            return "❌ Missing question."
+
+        # Step 1: Crawl and store
+        crawl_result = self.crawl_and_store(url)
+        if "error" in crawl_result:
+            return crawl_result["error"]
+
+        # Step 2: Run RAG query
+        context = self.rag_query(question)
+
+        # Step 3: Get final answer (using LLM, optional)
+        answer = self._generate_answer(context, question)
+
+        return (
+            f"✅ Crawled URL: {url}\n"
+            f"Stored {crawl_result['chunks']} chunk(s).\n"
+            f"Language: {crawl_result['language']}\n\n"
+            f"📄 **Context:**\n{context[:500]}...\n\n"
+            f"💡 **Answer:** {answer}"
+        )
+
+    def _generate_answer(self, context: str, question: str) -> str:
+        """
+        (Example) Calls OpenAI GPT-4-turbo or returns dummy answer.
+        Replace with your actual LLM integration.
+        """
+        # Example placeholder answer:
+        return f"(Placeholder answer) Based on context, the answer to your question is: TBD"
+
+        # Uncomment for real:
+        # openai.api_key = self.openai_api_key
+        # response = openai.ChatCompletion.create(
+        #     model="gpt-4o",
+        #     messages=[
+        #         {"role": "system", "content": "You are a helpful assistant."},
+        #         {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"}
+        #     ]
+        # )
+        # return response.choices[0].message['content']
