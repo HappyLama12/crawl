@@ -12,6 +12,7 @@ import os
 import re
 import time
 import requests
+import qdrant_client
 from typing import List, Union, Generator, Iterator
 from urllib.parse import urlparse
 
@@ -131,4 +132,3 @@ class Pipeline:
             f"Language: {language}\n\n"
             f"📄 **Sample content:**\n{joined_text}"
         )
-
