@@ -29,7 +29,7 @@ class Pipeline:
     def __init__(self):
         self.client = None
         self.embedder = None
-        self.collection_name = "rag_data"
+        self.collection_name = "rag_docs"
         self.vector_dim = 384  # Vector size for all-MiniLM-L6-v2
         self.crawl4ai_url = os.getenv("CRAWL4AI_URL", "http://crawl4ai:11235/crawl")
 
